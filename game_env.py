@@ -1,5 +1,6 @@
 import pygame
 import random
+from maps import simple_wall_map, cross_wall_map
 
 class SnakeGame:
     def __init__(self, width, height, max_apples=10, difficulty="easy", obstacle_map=None):
@@ -13,17 +14,25 @@ class SnakeGame:
         self.reset()
 
     def reset(self):
+        self.obstacles = self.generate_obstacles()
         self.snake1 = [(5, 5)]
-        self.snake2 = [(15, 15)]
         self.direction1 = (1, 0)
-        self.direction2 = (-1, 0)
+
+        # 根據 obstacle_map 決定 snake2 安全位置
+        if self.obstacle_map == cross_wall_map or self.obstacle_map == simple_wall_map:
+            self.snake2 = [(25, 25)]
+            self.direction2 = (-1, 0)
+        else:
+            self.snake2 = [(15, 15)]
+            self.direction2 = (-1, 0)
+
         self.snake1_dead = False
         self.snake2_dead = False
         self.score1 = 0
         self.score2 = 0
-        self.game_over = False
-        self.obstacles = self.generate_obstacles() if self.difficulty == "hard" else []
         self.food = self.spawn_food()
+        self.game_over = False
+
 
     def generate_obstacles(self):
         if self.obstacle_map is not None:

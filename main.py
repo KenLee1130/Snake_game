@@ -91,13 +91,24 @@ def wait_for_key_and_restart(screen, font):
                 waiting = False
 
 def run_game(screen, font, difficulty, mode):
-    # Setup stage list
-    stages = [(SimpleAIAgent(), simple_wall_map)]
-    if difficulty == "hard":
-        stages.append((DQNAgent("dqn_snake_hard.pth"), cross_wall_map))
+    # 根據模式與難度設計關卡
+    if mode == "human":
+        if difficulty == "easy":
+            stages = [(None, simple_wall_map)]
+        else:  # hard
+            stages = [(None, simple_wall_map), (None, cross_wall_map)]
+    else:  # mode == "ai"
+        if difficulty == "easy":
+            stages = [(SimpleAIAgent(), simple_wall_map)]
+        else:  # hard
+            stages = [
+                (DQNAgent("dqn_snake_hard.pth"), simple_wall_map),
+                (DQNAgent("dqn_snake_hard.pth"), cross_wall_map)
+            ]
 
     for stage, (ai, map_func) in enumerate(stages):
-        game = SnakeGame(30, 30, max_apples=10, difficulty=difficulty, obstacle_map=map_func)
+        pygame.event.clear()  # 避免事件殘留造成提前結束
+        game = SnakeGame(30, 30, max_apples=1, difficulty=difficulty, obstacle_map=map_func)
         human = HumanAgent()
         paused = False
         start_time = time.time()
@@ -120,7 +131,7 @@ def run_game(screen, font, difficulty, mode):
                 direction = human.get_action()
                 game.update_snake1(direction)
 
-                if mode == "ai":
+                if mode == "ai" and ai is not None:
                     ai_direction = ai.get_action(game.snake2, game.food, game.snake1, game.obstacles)
                     game.update_snake2(ai_direction)
 
@@ -130,30 +141,36 @@ def run_game(screen, font, difficulty, mode):
                     elapsed = int(time.time() - start_time)
                     screen.fill((30, 30, 30))
 
+                    # 顯示關卡與勝負
+                    ai_name = type(ai).__name__.replace("Agent", "") if ai else ""
+                    ai_info = f" vs {ai_name}" if ai_name else ""
+                    stage_info = f"Stage {stage+1}/{len(stages)}{ai_info} | Time: {elapsed} sec"
+
                     if mode == "human":
-                        text = f"You win! Time: {elapsed} sec" if game.score1 >= game.max_apples else f"You lose! Time: {elapsed} sec"
+                        result_text = "You win!" if game.score1 >= game.max_apples else "You lose!"
                     elif mode == "ai":
                         if game.snake1_dead:
-                            text = f"AI wins! You lose in {elapsed} sec"
+                            result_text = "AI wins! You died"
                         elif game.snake2_dead:
-                            text = f"You win! AI dies in {elapsed} sec"
+                            result_text = "You win! AI died"
                         elif game.score1 >= game.max_apples:
-                            text = f"You win by apples! Time: {elapsed} sec"
+                            result_text = "You win by apples!"
                         elif game.score2 >= game.max_apples:
-                            text = f"AI wins by apples! Time: {elapsed} sec"
+                            result_text = "AI wins by apples!"
                         else:
-                            text = f"Draw! Time: {elapsed} sec"
+                            result_text = "Draw!"
 
-                    label = font.render(text, True, (255, 255, 255))
-                    screen.blit(label, (60, 300))
+                    label1 = font.render(stage_info, True, (255, 255, 255))
+                    label2 = font.render(result_text, True, (255, 255, 100))
+                    screen.blit(label1, (60, 270))
+                    screen.blit(label2, (60, 310))
                     pygame.display.flip()
                     pygame.time.wait(3000)
                     break
 
-
-
             pygame.display.flip()
             pygame.time.Clock().tick(20)
+
 
     wait_for_key_and_restart(screen, font)
 

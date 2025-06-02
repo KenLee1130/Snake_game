@@ -32,7 +32,7 @@ class DQNAgent:
         from train_dqn import DQN
         self.model = DQN(7, 4)
         
-        self.model.load_state_dict(torch.load(model_path))
+        self.model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
         self.model.eval()
 
     def get_action(self, snake, food, enemy_snake, obstacles):
