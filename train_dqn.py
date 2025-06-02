@@ -37,6 +37,7 @@ class DQNTrainer:
         self.epsilon_min = 0.1
         self.epsilon_decay = 0.995
         self.curriculum = curriculum
+        self.best_reward = float("-inf")
 
     def get_state(self, env):
         head = env.snake1[0]
@@ -94,26 +95,35 @@ class DQNTrainer:
             'model_state_dict': self.model.state_dict(),
             'target_model_state_dict': self.target_model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'epsilon': self.epsilon
+            'epsilon': self.epsilon,
+            'best_reward': self.best_reward
         }
-        filepath = os.path.join(path, f"checkpoint_ep{episode}.pt")
-        torch.save(checkpoint, filepath)
-        torch.save(checkpoint, os.path.join(path, "checkpoint_latest.pt"))  # 最新版本覆蓋
+        torch.save(checkpoint, os.path.join(path, f"checkpoint_ep{episode}.pt"))
+        torch.save(checkpoint, os.path.join(path, "checkpoint_latest.pt"))
 
-    def load_checkpoint(self, filename="checkpoints/checkpoint_latest.pt"):
+    def save_best_checkpoint(self, episode, path="checkpoints"):
+        filepath = os.path.join(path, "checkpoint_best.pt")
+        print(f"📌 New best reward! Saving to {filepath}")
+        self.save_checkpoint(episode, path)
+        torch.save(torch.load(os.path.join(path, "checkpoint_latest.pt")), filepath)
+
+    def load_checkpoint(self, filename="checkpoints/checkpoint_latest.pt", load_best=False):
+        if load_best:
+            filename = "checkpoints/checkpoint_best.pt"
         if not os.path.exists(filename):
-            print("No checkpoint found. Starting from scratch.")
+            print(f"No checkpoint found at {filename}. Starting from scratch.")
             return 0
         checkpoint = torch.load(filename, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.target_model.load_state_dict(checkpoint['target_model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.epsilon = checkpoint['epsilon']
-        print(f"Loaded checkpoint from {filename} at episode {checkpoint['episode']}")
+        self.best_reward = checkpoint.get('best_reward', float('-inf'))
+        print(f"✅ Loaded {'best' if load_best else 'latest'} checkpoint from {filename} (ep {checkpoint['episode']})")
         return checkpoint['episode']
 
     def train(self, start_ep=0, max_ep=None):
-        directions = [(1,0), (0,1), (-1,0), (0,-1)]
+        directions = [(1, 0), (0, 1), (-1, 0), (0, -1)]
         total_episodes = sum(episodes for _, _, episodes in self.curriculum)
         ep_counter = start_ep
 
@@ -127,9 +137,10 @@ class DQNTrainer:
                 state = self.get_state(env)
                 total_reward = 0
                 prev_dist = abs(env.snake1[0][0] - env.food[0]) + abs(env.snake1[0][1] - env.food[1])
-                max_steps = 1000  # Limit steps to prevent infinite loops
+                max_steps = 1000
                 done = False
-                step=0
+                step = 0
+
                 while not done and step < max_steps:
                     step += 1
                     action = self.get_action(state)
@@ -158,12 +169,17 @@ class DQNTrainer:
                 if ep_counter % 100 == 0:
                     self.save_checkpoint(ep_counter)
 
-                print(f"Episode {ep_counter+1}/{total_episodes} Reward: {total_reward:.2f} Epsilon: {self.epsilon:.2f}")
+                # ⬇️ 儲存最佳 checkpoint
+                if total_reward > self.best_reward:
+                    self.best_reward = total_reward
+                    self.save_best_checkpoint(ep_counter)
+
+                print(f"Episode {ep_counter + 1}/{total_episodes} Reward: {total_reward:.2f} Epsilon: {self.epsilon:.2f}")
                 ep_counter += 1
 
-
         torch.save(self.model.state_dict(), "dqn_snake_hard.pth")
-        print("Training completed and model saved.")
+        print("🏁 Training completed and model saved.")
+
 
 def curriculum(grid_size):
     return [
@@ -173,23 +189,24 @@ def curriculum(grid_size):
     ]
 
 
-def training_procedure(grid_size=30, curriculum_fn=None):
+def training_procedure(grid_size=30, curriculum_fn=None, load_best=False):
     if curriculum_fn is None:
         raise ValueError("You must provide a curriculum function")
 
-    trainer = DQNTrainer(grid_size=grid_size, curriculum=curriculum_fn(grid_size))
-
     # Phase 1: initial training
+    trainer = DQNTrainer(grid_size=grid_size, curriculum=curriculum_fn(grid_size))
     print("\n✨ Initial training (20 episodes)")
     trainer.train(start_ep=0, max_ep=20)
     trainer.save_checkpoint(20)
     print(f"\n✅ Checkpoint saved at episode 20")
 
     # Phase 2: resume training
-    print("\n🔄 Resume training from last checkpoint")
+    print("\n🔄 Resume training from checkpoint")
     trainer2 = DQNTrainer(grid_size=grid_size, curriculum=curriculum_fn(grid_size))
-    last_ep = trainer2.load_checkpoint()
+    last_ep = trainer2.load_checkpoint(load_best=load_best)
     trainer2.train(start_ep=last_ep + 1)
 
+
 if __name__ == "__main__":
-    training_procedure(grid_size=30, curriculum_fn=curriculum)
+    training_procedure(grid_size=30, curriculum_fn=curriculum, load_best=True)
+
