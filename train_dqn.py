@@ -161,15 +161,15 @@ class DQNTrainer:
                 print(f"Episode {ep_counter+1}/{total_episodes} Reward: {total_reward:.2f} Epsilon: {self.epsilon:.2f}")
                 ep_counter += 1
 
-                
+
         torch.save(self.model.state_dict(), "dqn_snake_hard.pth")
         print("Training completed and model saved.")
 
 def curriculum(grid_size):
     return [
-        (empty_map, "easy", 20),
-        (simple_wall_map, "hard", 200),
-        (cross_wall_map, "hard", 200),
+        (empty_map, "easy", 200),
+        (simple_wall_map, "hard", 400),
+        (cross_wall_map, "hard", 400),
     ]
 
 
