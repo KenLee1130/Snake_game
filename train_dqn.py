@@ -2,8 +2,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import cupy as cp
 import random
 from collections import deque
+from numba import jit
 from game_env import SnakeGame
 from maps import empty_map, simple_wall_map, cross_wall_map
 
@@ -18,6 +20,10 @@ class DQN(nn.Module):
 
     def forward(self, x):
         return self.model(x)
+
+@jit(nopython=True)
+def compute_reward(snake_head_x, snake_head_y, food_x, food_y):
+    return 1.0 if (snake_head_x == food_x and snake_head_y == food_y) else -0.01
 
 class DQNTrainer:
     def __init__(self, grid_size, episodes=600):
@@ -43,14 +49,15 @@ class DQNTrainer:
         dy = food[1] - head[1]
         dx /= self.grid_size
         dy /= self.grid_size
-        return np.array([
+        state_cp = cp.array([
             head[0] / self.grid_size,
             head[1] / self.grid_size,
             dx,
             dy,
             int(env.difficulty == "hard"),
             len(env.obstacles) / 100
-        ], dtype=np.float32)
+        ], dtype=cp.float32)
+        return cp.asnumpy(state_cp)
 
     def get_action(self, state):
         if random.random() < self.epsilon:
@@ -104,7 +111,7 @@ class DQNTrainer:
                 directions = [(1,0), (0,1), (-1,0), (0,-1)]
                 env.update_snake1(directions[action])
                 next_state = self.get_state(env)
-                reward = 1 if env.snake1[0] == env.food else -0.01
+                reward = compute_reward(env.snake1[0][0], env.snake1[0][1], env.food[0], env.food[1])
                 done = env.is_game_over()
                 self.remember(state, action, reward, next_state, done)
                 self.train_step()
