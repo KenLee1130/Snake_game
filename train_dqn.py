@@ -1,11 +1,11 @@
+import os
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-import cupy as cp
 import random
 from collections import deque
-from numba import jit
 from game_env import SnakeGame
 from maps import empty_map, simple_wall_map, cross_wall_map
 
@@ -21,16 +21,12 @@ class DQN(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-@jit(nopython=True)
-def compute_reward(snake_head_x, snake_head_y, food_x, food_y):
-    return 1.0 if (snake_head_x == food_x and snake_head_y == food_y) else -0.01
-
 class DQNTrainer:
-    def __init__(self, grid_size, episodes=600):
+    def __init__(self, grid_size, curriculum):
         self.grid_size = grid_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = DQN(6, 4).to(self.device)
-        self.target_model = DQN(6, 4).to(self.device)
+        self.model = DQN(7, 4).to(self.device)
+        self.target_model = DQN(7, 4).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
         self.criterion = nn.MSELoss()
@@ -40,24 +36,25 @@ class DQNTrainer:
         self.epsilon = 1.0
         self.epsilon_min = 0.1
         self.epsilon_decay = 0.995
-        self.episodes = episodes
+        self.curriculum = curriculum
 
     def get_state(self, env):
         head = env.snake1[0]
         food = env.food
-        dx = food[0] - head[0]
-        dy = food[1] - head[1]
-        dx /= self.grid_size
-        dy /= self.grid_size
-        state_cp = cp.array([
+        obs = env.obstacles
+
+        d_head_obs = min((abs(head[0] - x) + abs(head[1] - y)) for (x, y) in obs) if obs else 0
+        d_food_obs = min((abs(food[0] - x) + abs(food[1] - y)) for (x, y) in obs) if obs else 0
+
+        return np.array([
             head[0] / self.grid_size,
             head[1] / self.grid_size,
-            dx,
-            dy,
-            int(env.difficulty == "hard"),
-            len(env.obstacles) / 100
-        ], dtype=cp.float32)
-        return cp.asnumpy(state_cp)
+            food[0] / self.grid_size,
+            food[1] / self.grid_size,
+            d_head_obs / self.grid_size,
+            d_food_obs / self.grid_size,
+            len(obs) / 100
+        ], dtype=np.float32)
 
     def get_action(self, state):
         if random.random() < self.epsilon:
@@ -90,42 +87,109 @@ class DQNTrainer:
         loss.backward()
         self.optimizer.step()
 
-    def select_map(self, ep):
-        if ep < self.episodes * 0.33:
-            return empty_map(), "easy"
-        elif ep < self.episodes * 0.66:
-            return simple_wall_map(), "hard"
-        else:
-            return cross_wall_map(), "hard"
+    def save_checkpoint(self, episode, path="checkpoints"):
+        os.makedirs(path, exist_ok=True)
+        checkpoint = {
+            'episode': episode,
+            'model_state_dict': self.model.state_dict(),
+            'target_model_state_dict': self.target_model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'epsilon': self.epsilon
+        }
+        filepath = os.path.join(path, f"checkpoint_ep{episode}.pt")
+        torch.save(checkpoint, filepath)
+        torch.save(checkpoint, os.path.join(path, "checkpoint_latest.pt"))  # 最新版本覆蓋
 
-    def train(self):
-        for ep in range(self.episodes):
-            map_obstacles, difficulty = self.select_map(ep)
-            env = SnakeGame(self.grid_size, self.grid_size, max_apples=10, difficulty=difficulty, fixed_obstacles=map_obstacles)
-            env.reset()
-            state = self.get_state(env)
-            total_reward = 0
-            done = False
-            while not done:
-                action = self.get_action(state)
-                directions = [(1,0), (0,1), (-1,0), (0,-1)]
-                env.update_snake1(directions[action])
-                next_state = self.get_state(env)
-                reward = compute_reward(env.snake1[0][0], env.snake1[0][1], env.food[0], env.food[1])
-                done = env.is_game_over()
-                self.remember(state, action, reward, next_state, done)
-                self.train_step()
-                state = next_state
-                total_reward += reward
+    def load_checkpoint(self, filename="checkpoints/checkpoint_latest.pt"):
+        if not os.path.exists(filename):
+            print("No checkpoint found. Starting from scratch.")
+            return 0
+        checkpoint = torch.load(filename, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.target_model.load_state_dict(checkpoint['target_model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.epsilon = checkpoint['epsilon']
+        print(f"Loaded checkpoint from {filename} at episode {checkpoint['episode']}")
+        return checkpoint['episode']
 
-            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-            if ep % 20 == 0:
-                self.target_model.load_state_dict(self.model.state_dict())
-            print(f"Episode {ep+1} Reward: {total_reward:.2f} Epsilon: {self.epsilon:.2f}")
+    def train(self, start_ep=0, max_ep=None):
+        directions = [(1,0), (0,1), (-1,0), (0,-1)]
+        total_episodes = sum(episodes for _, _, episodes in self.curriculum)
+        ep_counter = start_ep
 
-        torch.save(self.model, "dqn_snake_hard.pth")
+        for map_obstacles, difficulty, num_eps in self.curriculum:
+            for _ in range(num_eps):
+                if max_ep is not None and ep_counter >= max_ep:
+                    return
+
+                env = SnakeGame(self.grid_size, self.grid_size, max_apples=10, difficulty=difficulty, obstacle_map=map_obstacles)
+                env.reset()
+                state = self.get_state(env)
+                total_reward = 0
+                prev_dist = abs(env.snake1[0][0] - env.food[0]) + abs(env.snake1[0][1] - env.food[1])
+                max_steps = 1000  # Limit steps to prevent infinite loops
+                done = False
+                step=0
+                while not done and step < max_steps:
+                    step += 1
+                    action = self.get_action(state)
+                    env.update_snake1(directions[action])
+                    next_state = self.get_state(env)
+
+                    head = env.snake1[0]
+                    if head == env.food:
+                        reward = 1
+                    elif head in env.obstacles:
+                        reward = -1
+                    else:
+                        new_dist = abs(head[0] - env.food[0]) + abs(head[1] - env.food[1])
+                        reward = 0.05 if new_dist < prev_dist else -0.02
+                        prev_dist = new_dist
+
+                    done = env.is_game_over()
+                    self.remember(state, action, reward, next_state, done)
+                    self.train_step()
+                    state = next_state
+                    total_reward += reward
+
+                self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+                if ep_counter % 20 == 0:
+                    self.target_model.load_state_dict(self.model.state_dict())
+                if ep_counter % 100 == 0:
+                    self.save_checkpoint(ep_counter)
+
+                print(f"Episode {ep_counter+1}/{total_episodes} Reward: {total_reward:.2f} Epsilon: {self.epsilon:.2f}")
+                ep_counter += 1
+
+                
+        torch.save(self.model.state_dict(), "dqn_snake_hard.pth")
         print("Training completed and model saved.")
 
+def curriculum(grid_size):
+    return [
+        (empty_map, "easy", 20),
+        (simple_wall_map, "hard", 200),
+        (cross_wall_map, "hard", 200),
+    ]
+
+
+def training_procedure(grid_size=30, curriculum_fn=None):
+    if curriculum_fn is None:
+        raise ValueError("You must provide a curriculum function")
+
+    trainer = DQNTrainer(grid_size=grid_size, curriculum=curriculum_fn(grid_size))
+
+    # Phase 1: initial training
+    print("\n✨ Initial training (20 episodes)")
+    trainer.train(start_ep=0, max_ep=20)
+    trainer.save_checkpoint(20)
+    print(f"\n✅ Checkpoint saved at episode 20")
+
+    # Phase 2: resume training
+    print("\n🔄 Resume training from last checkpoint")
+    trainer2 = DQNTrainer(grid_size=grid_size, curriculum=curriculum_fn(grid_size))
+    last_ep = trainer2.load_checkpoint()
+    trainer2.train(start_ep=last_ep + 1)
+
 if __name__ == "__main__":
-    trainer = DQNTrainer(grid_size=30, episodes=600)
-    trainer.train()
+    training_procedure(grid_size=30, curriculum_fn=curriculum)

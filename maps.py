@@ -1,5 +1,5 @@
 
-def empty_map(width, height):
+def empty_map():
     return []
 
 def simple_wall_map(w, h):

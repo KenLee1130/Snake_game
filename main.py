@@ -94,7 +94,7 @@ def run_game(screen, font, difficulty, mode):
     # Setup stage list
     stages = [(SimpleAIAgent(), simple_wall_map)]
     if difficulty == "hard":
-        stages.append((SimpleAIAgent(), cross_wall_map))#(DQNAgent("dqn_snake_hard.pth"), 0.12))
+        stages.append((DQNAgent("dqn_snake_hard.pth"), cross_wall_map))
 
     for stage, (ai, map_func) in enumerate(stages):
         game = SnakeGame(30, 30, max_apples=10, difficulty=difficulty, obstacle_map=map_func)
